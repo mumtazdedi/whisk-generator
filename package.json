@@ -1,0 +1,21 @@
+{
+  "name": "generate-whisk",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "interactive": "node index.js --interactive",
+    "help": "node index.js --help"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "node-fetch": "^3.3.2",
+    "ora": "^7.0.1",
+    "sharp": "^0.33.5"
+  }
+}
