@@ -121,6 +121,7 @@ class WhiskTerminalApp {
       compression: 80,
       workers: 1,
       promptFile: null,
+      requestDelay: 1000,
     };
     this.clients = [];
     this.currentTokenIndex = 0;
@@ -212,8 +213,10 @@ class WhiskTerminalApp {
         line.trim() !== promptToRemove.trim() || line.startsWith("#")
       );
       await fs.writeFile(filePath, filteredLines.join("\n"));
+      return true;
     } catch (error) {
       console.log(chalk.yellow(`⚠️  Warning: Could not remove prompt from file: ${error.message}`));
+      return false;
     }
   }
 
@@ -382,6 +385,7 @@ class WhiskTerminalApp {
     console.log(`${aspectDisplay}`);
     console.log(`🗜️  Image Quality: ${this.config.compression}%`);
     console.log(`👥 Workers: ${this.config.workers}`);
+    console.log(`⏱️  API Request Delay: ${this.config.requestDelay}ms`);
     console.log(chalk.gray("─".repeat(40)));
 
     console.log(chalk.cyan("\nSettings Menu:"));
@@ -389,9 +393,10 @@ class WhiskTerminalApp {
     console.log("2. 📐 Configure Aspect Ratio");
     console.log("3. 🗜️  Change Image Quality");
     console.log("4. 👥 Change Number of Workers");
-    console.log("5. 🔙 Back to Main Menu");
+    console.log("5. ⏱️  Configure API Request Delay");
+    console.log("6. 🔙 Back to Main Menu");
 
-    const choice = await this.promptUser("\nSelect option (1-5): ");
+    const choice = await this.promptUser("\nSelect option (1-6): ");
     return choice;
   }
 
@@ -552,9 +557,9 @@ class WhiskTerminalApp {
   }
 
   async handleSettingsConfiguration() {
-    while (true) {
-      const choice = await this.showSettingsMenu();
-
+    let choice = "0";
+    while (choice !== "6") {
+      choice = await this.showSettingsMenu();
       switch (choice) {
         case "1":
           await this.configureOutputDirectory();
@@ -569,9 +574,12 @@ class WhiskTerminalApp {
           await this.configureWorkers();
           break;
         case "5":
+          await this.configureRequestDelay();
+          break;
+        case "6":
           return;
         default:
-          console.log(chalk.red("❌ Invalid option. Please select 1-5."));
+          console.log(chalk.yellow("Invalid option. Please try again."));
           await this.promptUser("⏎ Press Enter to continue...");
       }
     }
@@ -752,6 +760,43 @@ class WhiskTerminalApp {
     await this.promptUser("⏎ Press Enter to continue...");
   }
 
+  async configureRequestDelay() {
+    console.clear();
+    console.log(chalk.blue.bold("\n⏱️  API Request Delay Configuration\n"));
+    console.log(chalk.cyan(`Current delay: ${this.config.requestDelay}ms`));
+    
+    console.log(chalk.yellow("💡 Higher delay = more respectful to API but slower generation"));
+    console.log(chalk.gray("   Recommended: 1000ms (1 second) between requests per worker"));
+    console.log(chalk.gray("   Minimum: 0ms (no delay) - use only if approved by API provider"));
+    console.log(chalk.gray("   Maximum: 10000ms (10 seconds)"));
+
+    const delay = await this.promptUser(
+      "\nEnter delay in milliseconds (0-10000) or press Enter to keep current: ",
+    );
+    
+    if (!delay) {
+      console.log(chalk.yellow("API request delay unchanged."));
+      await this.promptUser("⏎ Press Enter to continue...");
+      return;
+    }
+
+    const delayNum = parseInt(delay);
+    if (isNaN(delayNum) || delayNum < 0 || delayNum > 10000) {
+      console.log(chalk.red("❌ Invalid delay. Please enter a number between 0-10000."));
+      await this.promptUser("⏎ Press Enter to continue...");
+      return;
+    }
+
+    const oldDelay = this.config.requestDelay;
+    this.config.requestDelay = delayNum;
+    await this.autoSaveSettings();
+    
+    console.log(chalk.green("✅ API request delay updated successfully!"));
+    console.log(chalk.blue(`Changed from: ${oldDelay}ms to ${delayNum}ms`));
+    
+    await this.promptUser("⏎ Press Enter to continue...");
+  }
+
   async setPromptFile() {
     console.clear();
     console.log(chalk.blue.bold("\n📝 Set Prompt File\n"));
@@ -866,6 +911,7 @@ class WhiskTerminalApp {
     console.log(`📐 Aspect Ratio: ${this.config.randomAspectRatio ? "🎲 Random" : this.config.aspectRatioDisplay}`);
     console.log(`🗜️  Image Quality: ${this.config.compression}%`);
     console.log(`👥 Workers: ${this.config.workers}`);
+    console.log(`⏱️  API Request Delay: ${this.config.requestDelay}ms`);
     console.log(chalk.gray("━".repeat(50)));
     
     // Ready to generate?
@@ -896,7 +942,7 @@ class WhiskTerminalApp {
   }
 
   async generateImagesWorker(prompts, workerId, totalWorkers) {
-    const results = { success: 0, failed: 0, images: [], completedPrompts: [] };
+    const results = { success: 0, failed: 0, images: [], completedPrompts: [], failedPrompts: [] };
 
     for (let i = 0; i < prompts.length; i++) {
       const prompt = prompts[i];
@@ -942,6 +988,7 @@ class WhiskTerminalApp {
                 `Worker ${workerId + 1}: Failed with all tokens - ${result.Err.message}`,
               );
               results.failed++;
+              results.failedPrompts.push(prompt);
             } else {
               spinner.text = `Worker ${workerId + 1}: Retrying with different token... (${attempts}/${maxAttempts})`;
             }
@@ -954,6 +1001,7 @@ class WhiskTerminalApp {
             if (attempts >= maxAttempts) {
               spinner.fail(`Worker ${workerId + 1}: No images generated with any token`);
               results.failed++;
+              results.failedPrompts.push(prompt);
             } else {
               spinner.text = `Worker ${workerId + 1}: No images returned, retrying... (${attempts}/${maxAttempts})`;
             }
@@ -977,8 +1025,12 @@ class WhiskTerminalApp {
             }
           }
 
+          // Remove this prompt from the file immediately after successful generation
+          const removed = await this.removePromptFromFile(this.config.promptFile, prompt);
+          
+          const removeStatus = removed ? "✅ Prompt removed from file" : "";
           spinner.succeed(
-            `Worker ${workerId + 1}: ✅ Generated ${savedCount} image(s) (${aspectDisplay})`,
+            `Worker ${workerId + 1}: ✅ Generated ${savedCount} image(s) (${aspectDisplay}) ${removeStatus}`,
           );
           results.success += savedCount;
           results.completedPrompts.push(prompt);
@@ -988,6 +1040,7 @@ class WhiskTerminalApp {
           if (attempts >= maxAttempts) {
             spinner.fail(`Worker ${workerId + 1}: Error with all tokens - ${error.message}`);
             results.failed++;
+            results.failedPrompts.push(prompt);
           } else {
             spinner.text = `Worker ${workerId + 1}: Network error, retrying... (${attempts}/${maxAttempts})`;
           }
@@ -996,7 +1049,7 @@ class WhiskTerminalApp {
 
       // Add delay between requests for same worker to be respectful to the API
       if (i < prompts.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, this.config.requestDelay));
       }
     }
 
@@ -1004,24 +1057,21 @@ class WhiskTerminalApp {
   }
 
   async removeCompletedPromptsFromFile(completedPrompts) {
-    if (!this.config.promptFile || completedPrompts.length === 0) return;
+    if (!this.config.promptFile || completedPrompts.length === 0) return false;
 
-    try {
-      const content = await fs.readFile(this.config.promptFile, "utf-8");
-      const lines = content.split("\n");
-      const remainingLines = lines.filter(line => {
-        const trimmedLine = line.trim();
-        // Keep empty lines, comments, and prompts that weren't completed
-        return !trimmedLine || 
-               trimmedLine.startsWith("#") || 
-               !completedPrompts.includes(trimmedLine);
-      });
-      
-      await fs.writeFile(this.config.promptFile, remainingLines.join("\n"));
-      console.log(chalk.green(`📝 Removed ${completedPrompts.length} completed prompts from file`));
-    } catch (error) {
-      console.log(chalk.yellow(`⚠️  Warning: Could not update prompt file: ${error.message}`));
+    let success = true;
+    for (const prompt of completedPrompts) {
+      const removed = await this.removePromptFromFile(this.config.promptFile, prompt);
+      if (!removed) success = false;
     }
+    
+    if (success) {
+      console.log(chalk.green(`📝 All completed prompts have been removed from file`));
+    } else {
+      console.log(chalk.yellow(`⚠️  Warning: Some prompts could not be removed from file`));
+    }
+    
+    return success;
   }
 
   async generateImages() {
@@ -1063,6 +1113,7 @@ class WhiskTerminalApp {
     console.log(`🔑 API Tokens: ${this.config.tokens.length}`);
     console.log(`📝 Prompts: ${currentPrompts.length}`);
     console.log(`👥 Workers: ${this.config.workers}`);
+    console.log(`⏱️  API Request Delay: ${this.config.requestDelay}ms`);
     console.log(`📐 Aspect Ratio: ${this.config.randomAspectRatio ? "🎲 Random" : this.config.aspectRatioDisplay}`);
     console.log(`🗜️  Image Quality: ${this.config.compression}%`);
     console.log(`📁 Output Directory: ${this.config.outputDir}`);
@@ -1139,6 +1190,7 @@ class WhiskTerminalApp {
       );
       const allImages = results.flatMap((result) => result.images);
       const allCompletedPrompts = results.flatMap((result) => result.completedPrompts);
+      const allFailedPrompts = results.flatMap((result) => result.failedPrompts);
 
       const endTime = Date.now();
       const duration = Math.round((endTime - startTime) / 1000);
@@ -1146,10 +1198,7 @@ class WhiskTerminalApp {
       const seconds = duration % 60;
       const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 
-      // Remove completed prompts from file
-      if (allCompletedPrompts.length > 0) {
-        await this.removeCompletedPromptsFromFile(allCompletedPrompts);
-      }
+      // Prompts are already removed individually after successful generation
 
       // Final results
       console.log(chalk.green.bold(`\n✅ Generation Complete!`));
@@ -1163,8 +1212,14 @@ class WhiskTerminalApp {
       console.log(chalk.blue(`⏱️  Total time: ${timeStr}`));
       console.log(chalk.blue(`📁 Images saved to: ${this.config.outputDir}`));
       
-      // Calculate remaining prompts
-      const remainingPrompts = currentPrompts.length - allCompletedPrompts.length;
+      // Calculate remaining prompts based on the current file
+      let remainingPrompts = 0;
+      try {
+        const remainingPromptsList = await this.loadPromptsFromFile(this.config.promptFile);
+        remainingPrompts = remainingPromptsList.length;
+      } catch (error) {
+        console.log(chalk.yellow(`⚠️  Warning: Could not count remaining prompts: ${error.message}`));
+      }
       if (remainingPrompts > 0) {
         console.log(chalk.yellow(`📝 Remaining prompts: ${remainingPrompts}`));
         console.log(chalk.blue("💡 Run generation again to process remaining prompts"));
