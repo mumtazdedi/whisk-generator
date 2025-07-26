@@ -1165,6 +1165,10 @@ class WhiskTerminalApp {
       failedPrompts: [],
     };
 
+    // Track consecutive prompts with 429/401 errors for this worker
+    let consecutivePromptErrors = 0;
+    const MAX_CONSECUTIVE_PROMPT_ERRORS = 3;
+
     // Calculate total prompts count for tracking progress
     const totalPromptsForThisWorker = prompts.length;
 
@@ -1199,6 +1203,7 @@ class WhiskTerminalApp {
       let success = false;
       let attempts = 0;
       const maxAttempts = this.clients.length > 0 ? this.clients.length : 1;
+      let promptHadApiError = false; // Track if this prompt had a 429/401 error
 
       while (!success && attempts < maxAttempts) {
         // Get a client for this attempt
@@ -1233,6 +1238,14 @@ class WhiskTerminalApp {
 
           if (result.Err) {
             attempts++;
+            
+            // Check if this is a 429 error (rate limit) or 401 error (unauthorized)
+            if (result.Err.message && (result.Err.message.includes("429") || result.Err.message.includes("401"))) {
+              const errorType = result.Err.message.includes("429") ? "Rate limit error (429)" : "Unauthorized error (401)";
+              spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ${errorType}`;
+              promptHadApiError = true;
+            }
+            
             if (attempts >= maxAttempts) {
               const promptPreviewShort =
                 prompt.substring(0, 35) + (prompt.length > 35 ? "..." : "");
@@ -1321,8 +1334,18 @@ class WhiskTerminalApp {
           results.success += savedCount;
           results.completedPrompts.push(prompt);
           success = true;
+          // This prompt was successful, reset flag
+          promptHadApiError = false;
         } catch (error) {
           attempts++;
+          
+          // Check if this is a 429 error (rate limit) or 401 error (unauthorized)
+          if (error.message && (error.message.includes("429") || error.message.includes("401"))) {
+            const errorType = error.message.includes("429") ? "Rate limit error (429)" : "Unauthorized error (401)";
+            spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ${errorType}`;
+            promptHadApiError = true;
+          }
+          
           if (attempts >= maxAttempts) {
             const promptPreviewShort =
               prompt.substring(0, 35) + (prompt.length > 35 ? "..." : "");
@@ -1339,6 +1362,43 @@ class WhiskTerminalApp {
         }
       }
 
+      // Check if this prompt had a 429/401 error
+      if (promptHadApiError) {
+        consecutivePromptErrors++;
+        
+        // Log the consecutive errors
+        console.log(
+          chalk.yellow(
+            `${workerId_display}: ⚠️ ${consecutivePromptErrors}/${MAX_CONSECUTIVE_PROMPT_ERRORS} consecutive prompts with API errors (429/401)`,
+          ),
+        );
+        
+        // Stop the worker if we've hit too many consecutive prompts with API errors
+        if (consecutivePromptErrors >= MAX_CONSECUTIVE_PROMPT_ERRORS) {
+          const promptPreviewShort =
+            prompt.substring(0, 35) + (prompt.length > 35 ? "..." : "");
+          console.log(
+            chalk.red(
+              `\n\n${workerId_display}: ❌ STOPPING WORKER - ${MAX_CONSECUTIVE_PROMPT_ERRORS} consecutive prompts with API errors (429/401)
+⚠️ All tokens appear to be rate-limited or unauthorized
+💬 Last prompt: "${promptPreviewShort}"\n`,
+            ),
+          );
+          
+          // Add remaining prompts to failedPrompts list
+          for (let j = i + 1; j < prompts.length; j++) {
+            results.failedPrompts.push(prompts[j]);
+            results.failed++;
+          }
+          
+          // Exit the loop to stop processing
+          return results;
+        }
+      } else {
+        // Reset counter on successful prompt
+        consecutivePromptErrors = 0;
+      }
+      
       // Add delay between requests for same worker to be respectful to the API
       if (i < prompts.length - 1) {
         // Show waiting message if delay is significant
