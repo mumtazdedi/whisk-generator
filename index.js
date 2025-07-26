@@ -516,9 +516,10 @@ class WhiskTerminalApp {
     try {
       const testClient = new WhiskClient(token);
       await testClient.checkCredentials();
-      testSpinner.succeed("Token format is valid");
+      testSpinner.succeed("\n✅ Token format is valid\n");
     } catch (error) {
-      testSpinner.fail(`Token validation failed: ${error.message}`);
+      testSpinner.fail(`\n❌ Token validation failed:
+⚠️ Error: ${error.message}\n`);
       await this.promptUser("⏎ Press Enter to continue...");
       return;
     }
@@ -1164,9 +1165,11 @@ class WhiskTerminalApp {
       failedPrompts: [],
     };
 
+    // Calculate total prompts count for tracking progress
+    const totalPromptsForThisWorker = prompts.length;
+
     for (let i = 0; i < prompts.length; i++) {
       const prompt = prompts[i];
-      const globalIndex = workerId + i * totalWorkers + 1;
 
       // Get aspect ratio for this image
       let aspectRatio = this.config.aspectRatio;
@@ -1180,12 +1183,14 @@ class WhiskTerminalApp {
 
       // Format worker ID and prompt display
       const workerId_display = `Worker ${workerId + 1}`;
+      // Calculate the current prompt position
+      const promptPosition = i + 1;
 
       // Simple spinner with consistent format
       const promptPreview =
         prompt.substring(0, 40) + (prompt.length > 40 ? "..." : "");
       const spinner = ora(
-        `${workerId_display}: [${i + 1}/${prompts.length}] ${aspectDisplay} - "${promptPreview}"`,
+        `${workerId_display}: [${promptPosition}/${totalPromptsForThisWorker}] ${aspectDisplay} - "${promptPreview}"`,
       ).start();
 
       // Get client for this job
@@ -1200,20 +1205,21 @@ class WhiskTerminalApp {
         const client = this.getNextClient();
 
         if (!client) {
-          spinner.fail(`${workerId_display}: No valid tokens available`);
+          spinner.fail(`\n\n${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ❌ ERROR - No valid tokens available
+💬 Prompt: "${promptPreview}"\n`);
           results.failed++;
           break;
         }
 
         // Update spinner with retry information if this isn't the first attempt
         if (attempts > 0) {
-          spinner.text = `${workerId_display}: Retrying with token "${client.name}"... (${attempts + 1}/${maxAttempts})`;
+          spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): Retrying with token "${client.name}"... (${attempts + 1}/${maxAttempts})`;
         }
 
         try {
           // Show which token is being used (first attempt)
           if (attempts === 0) {
-            spinner.text = `${workerId_display}: Generating with token "${client.name}"...`;
+            spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): Generating with token "${client.name}"...`;
           }
 
           const result = await client.generateImage({
@@ -1223,18 +1229,22 @@ class WhiskTerminalApp {
           });
 
           // Update spinner to show we got a response
-          spinner.text = `${workerId_display}: Response received from token "${client.name}"`;
+          spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): Response received from token "${client.name}"`;
 
           if (result.Err) {
             attempts++;
             if (attempts >= maxAttempts) {
+              const promptPreviewShort =
+                prompt.substring(0, 35) + (prompt.length > 35 ? "..." : "");
               spinner.fail(
-                `${workerId_display}: Failed with all tokens - ${result.Err.message}`,
+                `\n\n${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ❌ FAILED - All tokens attempted
+⚠️ Error: ${result.Err.message}
+💬 Prompt: "${promptPreviewShort}"\n`,
               );
               results.failed++;
               results.failedPrompts.push(prompt);
             } else {
-              spinner.text = `${workerId_display}: Retrying with different token... (${attempts + 1}/${maxAttempts})`;
+              spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): Retrying with different token... (${attempts + 1}/${maxAttempts})`;
             }
             continue;
           }
@@ -1243,13 +1253,16 @@ class WhiskTerminalApp {
           if (!imagePanel || imagePanel.length === 0) {
             attempts++;
             if (attempts >= maxAttempts) {
+              const promptPreviewShort =
+                prompt.substring(0, 35) + (prompt.length > 35 ? "..." : "");
               spinner.fail(
-                `${workerId_display}: No images generated with any token`,
+                `\n\n${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ❌ FAILED - No images generated with any token
+💬 Prompt: "${promptPreviewShort}"\n`,
               );
               results.failed++;
               results.failedPrompts.push(prompt);
             } else {
-              spinner.text = `${workerId_display}: No images returned, retrying... (${attempts + 1}/${maxAttempts})`;
+              spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): No images returned, retrying... (${attempts + 1}/${maxAttempts})`;
             }
             continue;
           }
@@ -1262,7 +1275,7 @@ class WhiskTerminalApp {
               const fileName = `w${(workerId + 1).toString().padStart(2, "0")}_${timestamp}_${aspectShort}_${savedCount + 1}.jpg`;
 
               // Update spinner to show we're saving the image
-              spinner.text = `${workerId_display}: Saving image ${savedCount + 1}...`;
+              spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): Saving image ${savedCount + 1}...`;
 
               const filePath = await this.saveImage(
                 image.encodedImage,
@@ -1285,7 +1298,7 @@ class WhiskTerminalApp {
                 );
               }
               const fileSizeDisplay = (fileSize / 1024).toFixed(1) + "KB";
-              spinner.text = `${workerId_display}: Saved: ${fileName} (${fileSizeDisplay})`;
+              spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): Saved: ${fileName} (${fileSizeDisplay})`;
             }
           }
 
@@ -1295,10 +1308,15 @@ class WhiskTerminalApp {
             prompt,
           );
 
-          const removeStatus = removed ? "✅ Prompt removed from file" : "";
-          // Complete the spinner with a simple success message
+          // Complete the spinner with a multi-line structured success message
+          const promptPreviewShort =
+            prompt.substring(0, 35) + (prompt.length > 35 ? "..." : "");
+          const removeMsg = removed ? "\n🗑️ Prompt removed from file" : "";
           spinner.succeed(
-            `${workerId_display}: ✅ Generated ${savedCount} image(s) with token "${client.name}" (${aspectDisplay}) ${removeStatus}`,
+            `\n\n${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ✅ SUCCESS | Generated ${savedCount} image(s)
+🔑 Token: "${client.name}"
+📐 Format: ${aspectDisplay}
+💬 Prompt: "${promptPreviewShort}"${removeMsg}`,
           );
           results.success += savedCount;
           results.completedPrompts.push(prompt);
@@ -1306,13 +1324,17 @@ class WhiskTerminalApp {
         } catch (error) {
           attempts++;
           if (attempts >= maxAttempts) {
+            const promptPreviewShort =
+              prompt.substring(0, 35) + (prompt.length > 35 ? "..." : "");
             spinner.fail(
-              `${workerId_display}: Error with all tokens - ${error.message}`,
+              `\n\n${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ❌ ERROR - All tokens failed
+⚠️ Error: ${error.message}
+💬 Prompt: "${promptPreviewShort}"\n`,
             );
             results.failed++;
             results.failedPrompts.push(prompt);
           } else {
-            spinner.text = `${workerId_display}: Network error, retrying... (${attempts + 1}/${maxAttempts})`;
+            spinner.text = `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): Network error, retrying... (${attempts + 1}/${maxAttempts})`;
           }
         }
       }
@@ -1324,7 +1346,7 @@ class WhiskTerminalApp {
           const delaySeconds = (this.config.requestDelay / 1000).toFixed(1);
           console.log(
             chalk.dim(
-              `${workerId_display}: Waiting ${delaySeconds}s before next prompt...`,
+              `${workerId_display} (${promptPosition}/${totalPromptsForThisWorker}): ⏱️ Waiting ${delaySeconds}s before next prompt...\n`,
             ),
           );
           await new Promise((resolve) =>
